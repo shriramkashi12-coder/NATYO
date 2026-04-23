@@ -1,8 +1,8 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { auth, db } from './firebase';
-// NEW: Added addDoc, serverTimestamp, and onSnapshot for real-time questions
-import { collection, query, where, getDocs, doc, getDoc, addDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
+// NEW: Added updateDoc to allow admins to edit the document with a reply
+import { collection, query, where, getDocs, doc, getDoc, addDoc, updateDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
 const MASTER_EMAIL = "test@natyo.com";
@@ -18,10 +18,15 @@ export default function Show() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // NEW: State for the Questions System
+  // State for the Questions System
   const [questionsList, setQuestionsList] = useState<any[]>([]);
   const [questionText, setQuestionText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // NEW: State for Admin Replies
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [isReplying, setIsReplying] = useState(false);
 
   // Load Video Data
   useEffect(() => {
@@ -72,19 +77,16 @@ export default function Show() {
     return () => unsubscribeAuth();
   }, [state, navigate]);
 
-  // NEW: Real-time listener for Questions
+  // Real-time listener for Questions
   useEffect(() => {
     if (!state?.title) return;
 
-    // We look in a new "questions" collection for this specific video
     const qRef = collection(db, "questions");
     const q = query(qRef, where("title", "==", state.title.trim()));
 
-    // onSnapshot automatically updates the screen the second a new question is added
     const unsubscribeQuestions = onSnapshot(q, (snapshot) => {
       const fetchedQuestions = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // Client-side sort to show newest questions at the top (avoids Firebase index crash)
       fetchedQuestions.sort((a: any, b: any) => {
         const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
         const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
@@ -97,7 +99,7 @@ export default function Show() {
     return () => unsubscribeQuestions();
   }, [state]);
 
-  // NEW: Function to save the question to Firebase
+  // Function to save a new question
   const handlePostQuestion = async () => {
     if (!questionText.trim() || !userEmail) return;
     setIsSubmitting(true);
@@ -109,12 +111,35 @@ export default function Show() {
         text: questionText.trim(),
         createdAt: serverTimestamp()
       });
-      setQuestionText(""); // Clear the text box after posting
+      setQuestionText(""); 
     } catch (error) {
       console.error("Error posting question:", error);
       alert("Failed to post question. Please try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // NEW: Function to save the Admin's reply to a specific question
+  const handlePostReply = async (questionId: string) => {
+    if (!replyText.trim()) return;
+    setIsReplying(true);
+
+    try {
+      // Find the specific question and update it with the adminReply field
+      const qRef = doc(db, "questions", questionId);
+      await updateDoc(qRef, {
+        adminReply: replyText.trim()
+      });
+      
+      // Close the reply box and clear text
+      setReplyingTo(null);
+      setReplyText("");
+    } catch (error) {
+      console.error("Error posting reply:", error);
+      alert("Failed to post reply. Please try again.");
+    } finally {
+      setIsReplying(false);
     }
   };
 
@@ -196,24 +221,89 @@ export default function Show() {
             <div style={{ background: '#0a0a0a', padding: '30px', borderRadius: '12px', border: '1px solid #333' }}>
               
               {/* Dynamic Questions List */}
-              <div style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '20px' }}>
+              <div style={{ maxHeight: '400px', overflowY: 'auto', marginBottom: '20px' }}>
                 {questionsList.length === 0 ? (
                   <p style={{ color: '#a1a1aa', fontSize: '14px', fontStyle: 'italic', textAlign: 'center', padding: '20px 0' }}>
                     No questions yet. Be the first to ask!
                   </p>
                 ) : (
-                  questionsList.map((q) => (
-                    <div key={q.id} style={{ paddingBottom: '15px', borderBottom: '1px solid #1a1a1a', marginBottom: '15px' }}>
-                      <strong style={{ color: '#f59e0b', fontSize: '13px' }}>{q.userEmail}</strong>
-                      <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#ddd', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
-                        {q.text}
-                      </p>
-                    </div>
-                  ))
+                  questionsList.map((q) => {
+                    // Check if current logged-in user is the Admin
+                    const isCurrentUserAdmin = userEmail === MASTER_EMAIL;
+                    
+                    return (
+                      <div key={q.id} style={{ paddingBottom: '15px', borderBottom: '1px solid #1a1a1a', marginBottom: '15px' }}>
+                        
+                        {/* The Original Question */}
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <strong style={{ color: '#f59e0b', fontSize: '13px' }}>{q.userEmail}</strong>
+                        </div>
+                        <p style={{ margin: '8px 0 10px 0', fontSize: '14px', color: '#ddd', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
+                          {q.text}
+                        </p>
+
+                        {/* NEW: The Nested Admin Reply (shows if it exists) */}
+                        {q.adminReply && (
+                          <div style={{ 
+                            marginTop: '10px', padding: '15px', backgroundColor: 'rgba(245, 158, 11, 0.05)', 
+                            borderLeft: '3px solid #f59e0b', borderRadius: '0 8px 8px 0' 
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                              <strong style={{ color: '#f59e0b', fontSize: '13px' }}>{MASTER_EMAIL}</strong>
+                              <span style={{ backgroundColor: '#f59e0b', color: '#000', fontSize: '10px', fontWeight: 'bold', padding: '2px 6px', borderRadius: '4px', marginLeft: '10px', letterSpacing: '1px' }}>
+                                INSTRUCTOR
+                              </span>
+                            </div>
+                            <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#fff', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
+                              {q.adminReply}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* NEW: Reply Trigger Button (Only visible to Admin, and only if no reply exists) */}
+                        {isCurrentUserAdmin && !q.adminReply && replyingTo !== q.id && (
+                          <button 
+                            onClick={() => setReplyingTo(q.id)}
+                            style={{ background: 'none', border: 'none', color: '#a1a1aa', fontSize: '12px', cursor: 'pointer', padding: 0, marginTop: '5px', textDecoration: 'underline' }}
+                          >
+                            Reply to this question
+                          </button>
+                        )}
+
+                        {/* NEW: Admin Reply Input Box */}
+                        {replyingTo === q.id && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#111', borderRadius: '6px', border: '1px solid #333' }}>
+                            <textarea
+                              value={replyText}
+                              onChange={(e) => setReplyText(e.target.value)}
+                              placeholder="Type your official reply..."
+                              style={{ width: '100%', height: '60px', backgroundColor: '#000', color: '#fff', border: '1px solid #222', borderRadius: '4px', padding: '8px', marginBottom: '8px', resize: 'none', outline: 'none', boxSizing: 'border-box', fontSize: '13px' }}
+                            />
+                            <div style={{ display: 'flex', gap: '10px' }}>
+                              <button 
+                                onClick={() => handlePostReply(q.id)}
+                                disabled={isReplying || !replyText.trim()}
+                                style={{ padding: '6px 12px', backgroundColor: '#f59e0b', color: '#000', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                              >
+                                {isReplying ? 'Saving...' : 'Save Reply'}
+                              </button>
+                              <button 
+                                onClick={() => { setReplyingTo(null); setReplyText(""); }}
+                                style={{ padding: '6px 12px', backgroundColor: 'transparent', color: '#a1a1aa', border: '1px solid #333', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
-              {/* Input Area */}
+              {/* User Input Area */}
               <div style={{ marginTop: '10px' }}>
                 <textarea
                   value={questionText}
